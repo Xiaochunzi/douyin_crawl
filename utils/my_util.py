@@ -1,58 +1,33 @@
 import threading
-import time
-import random
 import uuid
 from loguru import logger
 
 
-# 生成随机睡眠时间
-def random_sleep(min_time=1, max_time=3):
-    """
-    随机睡眠指定的时间范围，单位为秒。
-    :param min_time: 最小睡眠时间（默认为1秒）
-    :param max_time: 最大睡眠时间（默认为3秒）
-    """
-    sleep_time = random.randint(min_time, max_time)
-    logger.info(f"随机睡眠 {sleep_time} 秒...")
-    time.sleep(sleep_time)
-
-
 def sanitize_filename(filename, max_len=100, ellipsis_str='...'):
-    """
-    去除操作系统不支持的文件名字符，并处理过长的文件名。
-    :param filename: 原始文件名
-    :param max_len: 文件名最大长度（默认为100）
-    :param ellipsis_str: 省略符号（默认为'...'）
-    :return: 处理后的文件名
-    """
-    if len(filename) == 0:
+    """去除操作系统不支持的文件名字符，并处理过长的文件名"""
+    if not filename:
         logger.warning("文件名为空，生成随机UUID作为文件名。")
         return str(uuid.uuid4())
     
+    # 去除非法字符
     invalid_chars = '<>:"/\\|?*\n\t\r'
-    sanitized_filename = ''.join('' if c in invalid_chars else c for c in filename)
-    sanitized_filename = sanitized_filename.strip(' .')
+    sanitized = ''.join('' if c in invalid_chars else c for c in filename).strip(' .')
     
-    if len(sanitized_filename) > max_len:
+    # 处理过长文件名
+    if len(sanitized) > max_len:
         if len(ellipsis_str) >= max_len:
             raise ValueError("省略符号长度不能大于或等于最大文件名长度。")
         head_len = (max_len - len(ellipsis_str)) // 2
         tail_len = max_len - len(ellipsis_str) - head_len
-        sanitized_filename = (sanitized_filename[:head_len] + ellipsis_str +
-                              sanitized_filename[-tail_len:])
+        sanitized = sanitized[:head_len] + ellipsis_str + sanitized[-tail_len:]
     
-    if len(sanitized_filename) == 0:
-        logger.warning("处理后文件名为空，生成随机UUID作为文件名。")
-        return str(uuid.uuid4())
-    
-    return sanitized_filename
+    return sanitized if sanitized else str(uuid.uuid4())
 
 
 class IDGenerator:
-    # 类变量，作为全局自增ID的计数器
-    _last_id: int = 0
-    # 锁，确保线程安全
-    _lock: threading.Lock = threading.Lock()
+    """线程安全的ID生成器"""
+    _last_id = 0
+    _lock = threading.Lock()
 
     @classmethod
     def generate_unique_id(cls) -> int:
