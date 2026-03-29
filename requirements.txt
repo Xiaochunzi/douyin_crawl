@@ -1,7 +1,3 @@
-# 核心依赖
-py_mini_racer>=0.6.0
-requests>=2.25.0
-urllib3>=1.26.0
-
-# 进度条和日志
-loguru>=0.6.0
+requests
+gmssl
+tqdm
