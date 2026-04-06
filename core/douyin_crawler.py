@@ -6,6 +6,7 @@
 import re
 import os
 import requests
+from datetime import datetime
 from urllib.parse import quote
 from util.abogus import ABogus
 from util.xbogus import XBogus
@@ -338,6 +339,332 @@ class DouyinCrawler:
         else:
             # 默认按视频处理
             return self._extract_video_info(data)
+
+
+
+    def get_collection_id(self, collection_url: str) -> str:
+        """??????? mix_id?????????"""
+        # ?? URL
+        url_patterns = [
+            r'https?://[^\s]+',
+            r'douyin\.com/collection/\d+',
+            r'iesdouyin\.com/share/mix/detail/\d+',
+        ]
+
+        extracted_url = None
+        for pattern in url_patterns:
+            match = re.search(pattern, collection_url)
+            if match:
+                extracted_url = match.group(0)
+                if not extracted_url.startswith('http'):
+                    extracted_url = 'https://' + extracted_url
+                break
+
+        if not extracted_url:
+            extracted_url = collection_url.strip()
+
+        # ??? URL ???? ID
+        patterns = [
+            r'/collection/(\d+)',
+            r'/share/mix/detail/(\d+)',
+            r'mix_id=(\d+)',
+            r'object_id=(\d+)',
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, extracted_url)
+            if match:
+                return match.group(1)
+
+        headers = {
+            "User-Agent": self.user_agent,
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        }
+        if self.cookie:
+            headers["Cookie"] = self.cookie
+
+        # ????????? URL
+        resp = requests.get(extracted_url, headers=headers, allow_redirects=True, timeout=15)
+        for pattern in patterns:
+            match = re.search(pattern, resp.url)
+            if match:
+                return match.group(1)
+
+        # ? HTML ????
+        for pattern in patterns:
+            match = re.search(pattern, resp.text)
+            if match:
+                return match.group(1)
+
+        raise ValueError(f"????????? ID: {extracted_url}")
+
+    def get_collection_detail(self, mix_id: str) -> dict:
+        """???????mix_info?"""
+        params = {
+            "device_platform": "webapp",
+            "aid": "6383",
+            "channel": "channel_pc_web",
+            "mix_id": mix_id,
+            "pc_client_type": "1",
+            "version_code": "290100",
+            "version_name": "29.1.0",
+            "cookie_enabled": "true",
+            "browser_language": "zh-CN",
+            "browser_platform": "Win32",
+            "browser_name": "Chrome",
+            "browser_version": "130.0.0.0",
+            "browser_online": "true",
+            "engine_name": "Blink",
+            "engine_version": "130.0.0.0",
+            "os_name": "Windows",
+            "os_version": "10",
+            "platform": "PC",
+            "msToken": "",
+        }
+
+        headers = {
+            "User-Agent": self.user_agent,
+            "Referer": f"https://www.douyin.com/collection/{mix_id}",
+            "Accept": "application/json, text/plain, */*",
+        }
+        if self.cookie:
+            headers["Cookie"] = self.cookie
+
+        api_url = "https://www.douyin.com/aweme/v1/web/mix/detail/"
+        result = self._request_json(api_url, params, headers)
+        if result and "mix_info" in result:
+            return result
+
+        raise ValueError("???????????? Cookie ?????")
+
+    def get_collection_videos(self, mix_id: str, max_pages: int = 1, progress_cb=None) -> list[str]:
+        """??????????????????"""
+        def emit(msg: str):
+            if progress_cb:
+                progress_cb(msg)
+            else:
+                print(msg)
+
+        headers = {
+            "User-Agent": self.user_agent,
+            "Referer": f"https://www.douyin.com/collection/{mix_id}",
+            "Accept": "application/json, text/plain, */*",
+        }
+        if self.cookie:
+            headers["Cookie"] = self.cookie
+
+        api_url = "https://www.douyin.com/aweme/v1/web/mix/aweme/"
+        cursor = 0
+        video_urls = []
+
+        for page in range(1, max_pages + 1):
+            params = {
+                "device_platform": "webapp",
+                "aid": "6383",
+                "channel": "channel_pc_web",
+                "mix_id": mix_id,
+                "cursor": str(cursor),
+                "count": "20",
+                "pc_client_type": "1",
+                "version_code": "290100",
+                "version_name": "29.1.0",
+                "cookie_enabled": "true",
+                "browser_language": "zh-CN",
+                "browser_platform": "Win32",
+                "browser_name": "Chrome",
+                "browser_version": "130.0.0.0",
+                "browser_online": "true",
+                "engine_name": "Blink",
+                "engine_version": "130.0.0.0",
+                "os_name": "Windows",
+                "os_version": "10",
+                "platform": "PC",
+                "msToken": "",
+            }
+
+            data = self._request_json(api_url, params, headers)
+            if not data:
+                emit(f"????????????? {page} ?")
+                break
+
+            aweme_list = data.get("aweme_list") or []
+            before_count = len(video_urls)
+            for aweme in aweme_list:
+                aweme_id = aweme.get("aweme_id")
+                if aweme_id:
+                    video_urls.append(f"https://www.douyin.com/video/{aweme_id}")
+
+            added = len(video_urls) - before_count
+            emit(f"??????: ? {page} ???? {added} ???? {len(video_urls)} ?")
+
+            if not data.get("has_more"):
+                emit("????????")
+                break
+
+            next_cursor = data.get("cursor", cursor)
+            if next_cursor == cursor:
+                emit("???? cursor ??????????????")
+                break
+            cursor = next_cursor
+
+        # ???????
+        deduped = list(dict.fromkeys(video_urls))
+        dup_count = len(video_urls) - len(deduped)
+        if dup_count > 0:
+            emit(f"??????: ???? {dup_count} ?")
+        return deduped
+
+    def get_collection_awemes(self, mix_id: str, max_pages: int = 1, progress_cb=None) -> list[dict]:
+        """?????? aweme ???????????????"""
+        def emit(msg: str):
+            if progress_cb:
+                progress_cb(msg)
+            else:
+                print(msg)
+
+        headers = {
+            "User-Agent": self.user_agent,
+            "Referer": f"https://www.douyin.com/collection/{mix_id}",
+            "Accept": "application/json, text/plain, */*",
+        }
+        if self.cookie:
+            headers["Cookie"] = self.cookie
+
+        api_url = "https://www.douyin.com/aweme/v1/web/mix/aweme/"
+        cursor = 0
+        awemes = []
+
+        for page in range(1, max_pages + 1):
+            params = {
+                "device_platform": "webapp",
+                "aid": "6383",
+                "channel": "channel_pc_web",
+                "mix_id": mix_id,
+                "cursor": str(cursor),
+                "count": "20",
+                "pc_client_type": "1",
+                "version_code": "290100",
+                "version_name": "29.1.0",
+                "cookie_enabled": "true",
+                "browser_language": "zh-CN",
+                "browser_platform": "Win32",
+                "browser_name": "Chrome",
+                "browser_version": "130.0.0.0",
+                "browser_online": "true",
+                "engine_name": "Blink",
+                "engine_version": "130.0.0.0",
+                "os_name": "Windows",
+                "os_version": "10",
+                "platform": "PC",
+                "msToken": "",
+            }
+
+            data = self._request_json(api_url, params, headers)
+            if not data:
+                emit(f"?? aweme ????????? {page} ?")
+                break
+
+            page_awemes = data.get("aweme_list") or []
+            before = len(awemes)
+            awemes.extend(page_awemes)
+            emit(f"?? aweme ??: ? {page} ???? {len(awemes)-before} ???? {len(awemes)} ?")
+
+            if not data.get("has_more"):
+                emit("?? aweme ????")
+                break
+
+            next_cursor = data.get("cursor", cursor)
+            if next_cursor == cursor:
+                emit("?? aweme cursor ????????")
+                break
+            cursor = next_cursor
+
+        # ? aweme_id ??
+        dedup = []
+        seen = set()
+        for a in awemes:
+            aid = str(a.get("aweme_id", ""))
+            if not aid or aid in seen:
+                continue
+            seen.add(aid)
+            dedup.append(a)
+        return dedup
+
+    def _extract_video_url_from_aweme(self, aweme: dict) -> str | None:
+        video = aweme.get("video") or {}
+        bit_rate_list = video.get("bit_rate") or []
+        if bit_rate_list:
+            bit_rate_list.sort(key=lambda x: x.get("bit_rate", 0), reverse=True)
+            for br in bit_rate_list:
+                play_addr = br.get("play_addr", {})
+                url_list = play_addr.get("url_list", [])
+                if url_list:
+                    return url_list[0].replace("playwm", "play")
+
+        play_addr = video.get("play_addr") or {}
+        url_list = play_addr.get("url_list") or []
+        if url_list:
+            return url_list[0].replace("playwm", "play")
+        return None
+
+    def _extract_image_urls_from_aweme(self, aweme: dict) -> list[str]:
+        images = aweme.get("images") or []
+        image_urls = []
+        for img in images:
+            if not isinstance(img, dict):
+                continue
+            url_list = img.get("url_list") or []
+            if url_list:
+                image_urls.append(url_list[0])
+                continue
+            download_list = img.get("download_url_list") or []
+            if download_list:
+                image_urls.append(download_list[0])
+        return image_urls
+
+    def parse_collection(self, collection_url: str, max_pages: int = 1) -> list[str]:
+        """?????????????"""
+        mix_id = self.get_collection_id(collection_url)
+        return self.get_collection_videos(mix_id, max_pages)
+
+    def parse_collection_detail(self, collection_url: str, max_pages: int = 1) -> list[dict]:
+        """???????????????????? aweme ???"""
+        mix_id = self.get_collection_id(collection_url)
+        awemes = self.get_collection_awemes(mix_id, max_pages)
+
+        details = []
+        for aweme in awemes:
+            author = aweme.get("author") or {}
+            desc = (aweme.get("desc") or "").strip()
+            aweme_id = str(aweme.get("aweme_id", ""))
+            aweme_type = aweme.get("aweme_type", 0)
+
+            if aweme_type in (2, 68) or aweme.get("images"):
+                image_urls = self._extract_image_urls_from_aweme(aweme)
+                details.append({
+                    "aweme_id": aweme_id,
+                    "desc": desc,
+                    "create_time": aweme.get("create_time"),
+                    "author_id": author.get("uid", author.get("sec_uid", "unknown")),
+                    "author_nickname": author.get("nickname", "unknown"),
+                    "author_sec_uid": author.get("sec_uid", ""),
+                    "image_urls": image_urls,
+                    "image_count": len(image_urls),
+                    "content_type": "image",
+                })
+            else:
+                play_url = self._extract_video_url_from_aweme(aweme)
+                details.append({
+                    "aweme_id": aweme_id,
+                    "desc": desc,
+                    "create_time": aweme.get("create_time"),
+                    "author_id": author.get("uid", author.get("sec_uid", "unknown")),
+                    "author_nickname": author.get("nickname", "unknown"),
+                    "author_sec_uid": author.get("sec_uid", ""),
+                    "play_url": play_url,
+                    "content_type": "video",
+                })
+
+        return details
 
     def get_sec_uid(self, user_url: str) -> str:
         """从用户链接提取 sec_uid（支持短链接跳转）"""
@@ -702,3 +1029,96 @@ class DouyinCrawler:
         
         print(f"\n下载完成！共下载 {len(downloaded)} 个文件")
         return downloaded
+
+    def download_collection_videos(self, collection_url: str, max_pages: int = None, output_dir: str = None, log_file: str = None) -> list[str]:
+        """????????????? aweme ???????????"""
+        if max_pages is None:
+            max_pages = self.max_pages
+        if output_dir is None:
+            output_dir = self.download_dir
+
+        mix_id = self.get_collection_id(collection_url)
+        collection_dir = os.path.join(output_dir, f"collection_{mix_id}")
+        os.makedirs(collection_dir, exist_ok=True)
+
+        if not log_file:
+            log_file = os.path.join(collection_dir, "download_progress.log")
+
+        def emit(msg: str):
+            print(msg)
+            try:
+                ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                with open(log_file, 'a', encoding='utf-8') as f:
+                    f.write(f"[{ts}] {msg}\n")
+            except Exception:
+                pass
+
+        emit(f"????: {log_file}")
+        emit(f"????????: mix_id={mix_id}, pages={max_pages}")
+        details = self.parse_collection_detail(collection_url, max_pages=max_pages)
+        total = len(details)
+        if total == 0:
+            emit("?????????????")
+            return []
+
+        emit(f"??? {total} ????????")
+        downloaded = []
+        success_items = 0
+
+        for i, item in enumerate(details, 1):
+            aweme_id = item.get('aweme_id', '')
+            desc = (item.get('desc') or '').replace('\n', ' ').strip()
+            content_type = item.get('content_type', 'unknown')
+            emit(f"\n[{i}/{total}] {content_type} {aweme_id} | {desc[:40]}")
+
+            try:
+                author_nickname = item.get('author_nickname', 'unknown')
+                author_sec_uid = item.get('author_sec_uid', '')
+                user_id_short = author_sec_uid[-8:] if len(author_sec_uid) >= 8 else author_sec_uid
+                user_folder = f"{_sanitize_filename(author_nickname, max_length=40)}_{user_id_short}"
+
+                if content_type == 'video':
+                    play_url = item.get('play_url')
+                    if not play_url:
+                        emit("  ??: ???????")
+                        continue
+                    filename = (_sanitize_filename(desc) if desc else f"video_{aweme_id}") + ".mp4"
+                    save_dir = os.path.join(collection_dir, user_folder, "videos")
+                    save_path = _get_unique_path(os.path.join(save_dir, filename))
+                    if self.download_file(play_url, save_path):
+                        downloaded.append(save_path)
+                        success_items += 1
+                        emit(f"  ??: {save_path}")
+                    else:
+                        emit("  ??: ??????")
+
+                elif content_type == 'image':
+                    image_urls = item.get('image_urls') or []
+                    if not image_urls:
+                        emit("  ??: ?????")
+                        continue
+                    folder_name = _sanitize_filename(desc, max_length=50) if desc else f"album_{aweme_id}"
+                    image_base_dir = os.path.join(collection_dir, user_folder, "videos")
+                    album_dir = _get_unique_path(os.path.join(image_base_dir, folder_name))
+                    os.makedirs(album_dir, exist_ok=True)
+
+                    one_ok = False
+                    for idx, img_url in enumerate(image_urls, 1):
+                        img_path = os.path.join(album_dir, f"{idx:03d}.jpg")
+                        if self.download_file(img_url, img_path):
+                            downloaded.append(img_path)
+                            one_ok = True
+                    if one_ok:
+                        success_items += 1
+                        emit(f"  ??: ?? {len(image_urls)} ? -> {album_dir}")
+                    else:
+                        emit("  ??: ??????")
+                else:
+                    emit("  ??: ??????")
+            except Exception as e:
+                emit(f"  ??: {e}")
+                continue
+
+        emit(f"\n??????: ???? {success_items}/{total}, ???? {len(downloaded)} ?")
+        return downloaded
+

@@ -1,7 +1,7 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """
 抖音下载器 CLI 工具
-支持视频、图集、用户主页批量下载
+支持视频、图集、用户主页和合集批量下载
 """
 
 import argparse
@@ -46,8 +46,23 @@ def download_user(crawler: DouyinCrawler, user_url: str, max_pages: int, output_
         print(f"❌ 批量下载失败: {e}")
 
 
+def download_collection(crawler: DouyinCrawler, collection_url: str, max_pages: int, output_dir: str, log_file: str = None):
+    """下载合集所有作品"""
+    try:
+        print(f"📚 开始下载合集作品，页数: {max_pages}")
+        paths = crawler.download_collection_videos(
+            collection_url,
+            max_pages=max_pages,
+            output_dir=output_dir,
+            log_file=log_file,
+        )
+        print(f"✅ 合集下载完成，共下载 {len(paths)} 个文件")
+    except Exception as e:
+        print(f"❌ 合集下载失败: {e}")
+
+
 def parse_only(crawler: DouyinCrawler, url: str):
-    """仅解析，不下载"""
+    """仅解析单条作品，不下载"""
     try:
         result = crawler.parse(url)
         print("\n📋 解析结果:")
@@ -66,55 +81,77 @@ def parse_only(crawler: DouyinCrawler, url: str):
         print(f"❌ 解析失败: {e}")
 
 
+def parse_collection_only(crawler: DouyinCrawler, collection_url: str, max_pages: int):
+    """仅解析合集，不下载"""
+    try:
+        mix_id = crawler.get_collection_id(collection_url)
+        detail = crawler.get_collection_detail(mix_id)
+        mix_info = detail.get('mix_info') or {}
+        mix_name = mix_info.get('mix_name', '')
+
+        items = crawler.parse_collection_detail(collection_url, max_pages=max_pages)
+        print("\n📋 合集解析结果:")
+        print(f"  合集ID: {mix_id}")
+        if mix_name:
+            print(f"  合集名称: {mix_name}")
+        print(f"  作品数量: {len(items)}")
+
+        for i, item in enumerate(items[:10], 1):
+            print(f"  {i}. [{item['content_type']}] {item['aweme_id']} - {item['desc'][:40]}")
+
+        if len(items) > 10:
+            print(f"  ... 其余 {len(items) - 10} 条未展示")
+    except Exception as e:
+        print(f"❌ 合集解析失败: {e}")
+
+
 def main():
     parser = argparse.ArgumentParser(
-        description='抖音下载器 - 支持视频、图集、用户主页批量下载',
+        description='抖音下载器 - 支持视频、图集、用户主页和合集批量下载',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog='''
 使用示例:
   # 下载单个视频或图集
   python douyin_cli.py -u "https://v.douyin.com/xxxxx"
-  
-  # 仅解析不下载
+
+  # 仅解析单条作品不下载
   python douyin_cli.py -u "https://v.douyin.com/xxxxx" --parse-only
-  
+
   # 下载用户主页前2页作品
   python douyin_cli.py --user "https://www.douyin.com/user/xxxxx" --pages 2
-  
+
+  # 下载合集前2页作品
+  python douyin_cli.py --collection "https://www.douyin.com/collection/xxxxx" --pages 2
+
+  # 仅解析合集
+  python douyin_cli.py --collection "https://v.douyin.com/xxxxx" --pages 1 --parse-only
+
+  # 合集下载并写入日志文件
+  python douyin_cli.py --collection "https://v.douyin.com/xxxxx" --pages 50 --log-file ./collection_progress.log
+
   # 指定输出目录
   python douyin_cli.py -u "https://v.douyin.com/xxxxx" -o ./my_downloads
-  
+
   # 使用自定义 cookie 文件
   python douyin_cli.py -u "https://v.douyin.com/xxxxx" --cookie ./my_cookie.txt
         '''
     )
 
-    parser.add_argument('-u', '--url',
-                        help='视频或图集链接')
-    parser.add_argument('--user',
-                        help='用户主页链接（批量下载）')
-    parser.add_argument('-o', '--output',
-                        default='downloads',
-                        help='输出目录 (默认: downloads)')
-    parser.add_argument('-p', '--pages',
-                        type=int,
-                        default=1,
-                        help='用户主页下载页数 (默认: 1)')
-    parser.add_argument('--cookie',
-                        default='cookie.txt',
-                        help='Cookie 文件路径 (默认: cookie.txt)')
-    parser.add_argument('--parse-only',
-                        action='store_true',
-                        help='仅解析，不下载')
+    parser.add_argument('-u', '--url', help='视频或图集链接')
+    parser.add_argument('--user', help='用户主页链接（批量下载）')
+    parser.add_argument('--collection', help='合集链接（批量下载）')
+    parser.add_argument('-o', '--output', default='downloads', help='输出目录 (默认: downloads)')
+    parser.add_argument('-p', '--pages', type=int, default=1, help='用户主页/合集下载页数 (默认: 1)')
+    parser.add_argument('--cookie', default='cookie.txt', help='Cookie 文件路径 (默认: cookie.txt)')
+    parser.add_argument('--parse-only', action='store_true', help='仅解析，不下载')
+    parser.add_argument('--log-file', help='进度日志文件路径（仅合集下载生效，默认写到合集目录）')
 
     args = parser.parse_args()
 
-    # 检查参数
-    if not args.url and not args.user:
+    if not args.url and not args.user and not args.collection:
         parser.print_help()
         sys.exit(1)
 
-    # 初始化爬虫
     if not os.path.exists(args.cookie):
         print(f"❌ Cookie 文件不存在: {args.cookie}")
         print("请创建 cookie.txt 文件并填入你的抖音 Cookie")
@@ -128,19 +165,18 @@ def main():
         sys.exit(1)
 
     print("✅ 初始化完成\n")
-
-    # 创建输出目录
     os.makedirs(args.output, exist_ok=True)
 
-    # 执行操作
-    if args.user:
-        # 批量下载用户主页
+    if args.collection:
+        if args.parse_only:
+            parse_collection_only(crawler, args.collection, args.pages)
+        else:
+            download_collection(crawler, args.collection, args.pages, args.output, args.log_file)
+    elif args.user:
         download_user(crawler, args.user, args.pages, args.output)
     elif args.parse_only:
-        # 仅解析
         parse_only(crawler, args.url)
     else:
-        # 下载单个
         download_single(crawler, args.url, args.output)
 
 
